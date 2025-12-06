@@ -1,0 +1,192 @@
+---
+title: "PHP1560_project_rough_notebook"
+format: html
+editor: visual
+---
+
+```{r}
+library(vroom) # faster for reading delimited data
+library(tidymodels)  # for model preparation and fitting
+library(dplyr)
+```
+
+```{r}
+#'
+#'cols to drop is a vector of all columns you want to drop
+#'label_col is the column with the labels you want to predict. In our case, 
+#'we are predicting the presence of an MRE motif, so we use mre_labels
+preprocess_data <- function(df, cols_to_drop, label_col) {
+  
+  # Drop unnecessary columns
+  df <- df[ , !(names(df) %in% cols_to_drop)]
+
+  # Remove rows with NA values
+  df <- na.omit(df)
+  
+  # Convert the label column to factor
+  df[[label_col]] <- as.factor(df[[label_col]])
+  
+  return(df)
+}
+
+```
+
+```{r}
+data_raw <- vroom("/Users/prottoyroy/Desktop/php1560/histone_data.txt", 
+            delim = "\t", 
+            quote = "")
+
+cols_to_drop <- c("clamp", "gaf", "psq", "seq", "gene_labels")
+label_col <- "mre_labels"                         # why do we need this here?
+
+data_clean <- preprocess_data(data_raw, cols_to_drop, label_col)
+```
+
+```{r}
+
+#' Filter dataset to a specific chromosome and make labels binary
+#'
+#' @param df cleaned dataframe (output of preprocess_data)
+#' @param chromosome e.g. "chrX", "chr2L"
+#' @param label_col column with MRE labels ("mre_labels")
+#' @return a dataframe filtered to the chromosome, with labels 0/1
+#' 
+filter_chromosome_data <- function(df, chromosome, label_col) {
+  
+  # subset by chromosome
+  df_chr <- df[df$chr == chromosome, ]
+  
+  # Case 1: chrX -> MRE class is 2
+  if (chromosome == "chrX") {
+    df_chr[[label_col]] <- ifelse(df_chr[[label_col]] == "2", "1", "0")
+  }
+  
+  # Case 2: any other chromosome -> MRE class is 1
+  else {
+    df_chr[[label_col]] <- ifelse(df_chr[[label_col]] == "1", "1", "0")
+  }
+  
+  # return as factor
+  df_chr[[label_col]] <- as.factor(df_chr[[label_col]])
+  
+  return(df_chr)
+}
+```
+
+```{r}
+df_chromosome <- filter_chromosome_data(data_clean, 
+                                        chromosome = "chrX", 
+                                        label_col = "mre_labels")
+levels(df_chromosome$mre_labels)
+```
+
+```{r}
+df_chromosome$mre_labels <- relevel(df_chromosome$mre_labels, ref = "0")
+```
+
+```{r}
+#' Split the data into training and testing sets
+#'
+#' @param df A cleaned and chromosome-filtered dataframe
+#' @param label_col Name of the label column ("mre_labels")
+#' @param prop Proportion of data to use for training
+#' @return A list containing train and test dataframes
+#' 
+split_data <- function(df, label_col, prop) {
+  
+  set.seed(123)
+  
+  df_split <- initial_split(df,
+                            prop = prop,
+                            strata = !!sym(label_col))
+  
+  train_df <- training(df_split)
+  test_df  <- testing(df_split)
+  
+  return(list(train = train_df, test = test_df))
+}
+```
+
+```{r}
+splits <- split_data(df_chromosome, label_col = "mre_labels", prop = 0.80)
+
+train_data <- splits$train
+test_data  <- splits$test
+```
+
+```{r}
+train_model <- function(train_df) {
+  
+  fitted_model <- logistic_reg() %>%
+    set_engine("glm") %>%
+    set_mode("classification") %>%
+    fit(
+      mre_labels ~ h3k27ac + h3k27me3 + h3k36me3 +
+                   h3k4me1 + h3k4me2 + h3k4me3 +
+                   h3k9me3 + h4k16ac,
+      data = train_df
+    )
+  
+  return(fitted_model)
+}
+```
+
+```{r}
+model <- train_model(train_data)
+tidy(model)
+```
+
+```{r}
+evaluate_model <- function(model, test_df) {
+  
+  # Generate predictions
+  preds <- predict(model, test_df, type = "class")
+  
+  # Build tibble for yardstick
+  results <- tibble(
+    truth = test_df$mre_labels,
+    estimate = preds$.pred_class
+  )
+  
+  # Custom metric set
+  custom_metrics <- metric_set(
+    accuracy, sens, spec, precision, recall, f_meas, kap, mcc
+  )
+  
+  # Compute metrics
+  metrics_output <- custom_metrics(results, truth = truth, estimate = estimate)
+  
+  # Confusion matrix
+  cm <- conf_mat(results, truth, estimate)
+  
+  return(list(
+    metrics = metrics_output,
+    confusion_matrix = cm,
+    results = results
+  ))
+}
+```
+
+```{r}
+evaluation <- evaluate_model(model, test_data)
+
+evaluation$metrics
+evaluation$confusion_matrix
+```
+
+```{r}
+predict_mre <- function(model, newdata) {
+  predict(model, newdata, type = "class")
+}
+```
+
+```{r}
+preds <- predict_mre(model, test_data)
+
+output <- bind_cols(
+  test_data %>% select(bin1_id, chr, start, end),
+  preds
+)
+
+output
+```
