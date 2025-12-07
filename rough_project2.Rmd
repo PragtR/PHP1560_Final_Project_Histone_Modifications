@@ -1,0 +1,379 @@
+---
+title: "rough_project2"
+output: html_document
+date: "2025-12-07"
+---
+
+```{r}
+library(vroom) # faster for reading delimited data
+library(tidymodels)  # for model preparation and fitting
+library(dplyr)
+library(themis)
+library(ggplot2)
+library(patchwork)
+
+```
+
+```{r}
+#'Preprocess data
+#'
+#'@description reads and preprocesses the data
+#'
+#'@param data_path a string containing the file path to the data. Uses vroom which supports tab-delimited data
+#'@param cols_to_drop a vector containing strings of the names of the columns you wish to drop, or remove from the data
+#'@param label_col a string containing the name of the column in your data that holds the labels
+#'@return a df containing the cleaned version of the data
+preprocess_data <- function(data_path, cols_to_drop, label_col) {
+  #Reading data
+  df <- vroom(data_path, delim = "\t", quote = "")
+  
+  #Drop unnecessary columns
+  df <- df[ , !(names(df) %in% cols_to_drop)]
+
+  #Remove rows with NA values
+  df <- na.omit(df)
+  
+  #Convert the label column to factor
+  df[[label_col]] <- as.factor(df[[label_col]])
+  
+  return(df)
+}
+
+
+#' Filter dataset to a specific chromosome and make labels binary
+#'
+#' @param df cleaned dataframe (output of preprocess_data)
+#' @param chromosome a string of the name of a chromosome in the chr column. The model will only collect training data from this chromosome. eg "chrX", "chr2L"
+#' @param label_col column name that contains the labels for classification
+#' @return a dataframe filtered to the chromosome, with labels 0/1
+#' 
+filter_chromosome_data <- function(df, chromosome, label_col) {
+  
+  #subset by chromosome
+  df_chr <- df[df$chr == chromosome, ]
+  
+  #Convert to character so comparisons work reliably
+  labels <- as.character(df_chr[[label_col]])
+  
+  #Anything NOT "0" becomes "1"
+  #This is more general instead of checking specifically for chrX. Other datasets might have weird labels, with this we assume anything that isnt a 0 is the positive class and assign is a 1
+  df_chr[[label_col]] <- ifelse(labels == "0", "0", "1")
+  
+  #Return as factor
+  df_chr[[label_col]] <- as.factor(df_chr[[label_col]])
+  
+  return(df_chr)
+}
+
+#' Split the data into training and testing sets
+#'
+#' @param df A cleaned and chromosome-filtered dataframe
+#' @param label_col Name of the label column ("mre_labels")
+#' @param prop Proportion of data to use for training
+#' @return A list containing train and test dataframes
+#' 
+split_data <- function(df, label_col, prop) {
+  
+  set.seed(123)
+  
+  df_split <- initial_split(df,
+                            prop = prop,
+                            strata = !!sym(label_col)) #Stratified split
+  
+  train_df <- training(df_split)
+  test_df  <- testing(df_split)
+  
+  return(list(train = train_df, test = test_df))
+}
+
+#'Train model
+#'
+#'@description fits data to a logistic regression model for binary classification.
+#'@param downsample a boolean indicating if the user wants to downsample the majority class in the training data. Recommended for datasets that are large but imbalanced. In our case, we opt for downsampling as we had ~4k (~20%) positive labels
+#'@param class_weights a boolean indicating if the user wants to include class weights. Useful if the dataset is slightly imbalanced and you don't want to downsample, but still want the model to pay more attention to the minority class. Only checked if downsample is false
+#'@return the fitted logisitc regression model
+train_model <- function(train_df, downsample=TRUE, class_weights=FALSE) {
+  
+  if(downsample) {
+    recipe_obj <- recipe(
+    mre_labels ~ h3k27ac + h3k27me3 + h3k36me3 +
+                 h3k4me1 + h3k4me2 + h3k4me3 +
+                 h3k9me3 + h4k16ac,
+    data = train_df) %>%
+    step_downsample(mre_labels) 
+  
+  model <- logistic_reg() %>%
+    set_engine("glm") %>%
+    set_mode("classification")
+  
+  workflow_obj <- workflow() %>%
+    add_recipe(recipe_obj) %>%
+    add_model(model)
+  
+  fitted <- fit(workflow_obj, data = train_df)
+  }
+  else {
+    if (class_weights) {
+      curr_prop <- table(train_df$mre_labels)
+      total <- sum(curr_prop)
+      class_weights <- total/(2*curr_prop)
+      train_df$class_weights <- ifelse(train_df$mre_labels=="1",
+                                      class_weights["1"],
+                                      class_weights["0"])
+  
+      fitted_model <- logistic_reg() %>%
+        set_engine("glm") %>%
+        set_mode("classification") %>%
+        fit(mre_labels ~ h3k27ac + h3k27me3 + h3k36me3 +
+              h3k4me1 + h3k4me2 + h3k4me3 +
+              h3k9me3 + h4k16ac,
+            data = train_df,
+            weights = train_df$class_weights)
+      return(fitted_model)
+    }
+    else {
+      fitted_model <- logistic_reg() %>%
+      set_engine("glm") %>%
+      set_mode("classification") %>%
+      fit(mre_labels ~ h3k27ac + h3k27me3 + h3k36me3 +
+            h3k4me1 + h3k4me2 + h3k4me3 +
+            h3k9me3 + h4k16ac,
+          data = train_df)
+      return(fitted_model)
+    }
+  }
+}
+
+#'Evaluate model
+#'
+#'@description evaluates the trained model on the testing set
+#'@param model the fitted regression model
+#'@param test_df the df containing the testing data
+#'@return a list containing metrics and data necessary for AUROC and AUPRC plots
+evaluate_model <- function(model, test_df) {
+  
+  # Generate predictions
+  preds <- predict(model, test_df, type = "class")
+  preds_prob  <- predict(model, test_df, type = "prob")
+  
+  # Build tibble for yardstick
+  results <- tibble(
+    truth = test_df$mre_labels,
+    estimate = preds$.pred_class,
+    prob_1 = preds_prob$.pred_1
+  )
+  
+  # Custom metric set
+  custom_metrics <- metric_set(
+    accuracy, sens, spec, precision, recall, f_meas, kap, mcc
+  )
+  
+  # Compute metrics
+  metrics_output <- custom_metrics(results, 
+                                   truth = truth, 
+                                   estimate = estimate,
+                                   event_level = "second") #positive label is in the second level of the factor
+  
+  # Confusion matrix
+  cm <- conf_mat(results, truth, estimate)
+  
+  #Adding functionality to return AUROC and AUPRC curves for plotting
+  auroc <- roc_auc(results,
+                     truth = truth,
+                     prob_1,
+                     event_level = "second")
+  auprc <- pr_auc(results,
+                   truth = truth,
+                   prob_1,
+                   event_level = "second")
+  auroc_data <- roc_curve(results,
+                              truth = truth,
+                              prob_1,
+                              event_level = "second")
+  auprc_data <- pr_curve(results,
+                            truth = truth,
+                            prob_1,
+                            event_level = "second")
+  
+  return(list(
+    metrics = metrics_output,
+    confusion_matrix = cm,
+    results = results,
+    auroc = auroc,
+    auprc = auprc,
+    auroc_data = auroc_data,
+    auprc_data = auprc_data
+  ))
+}
+
+#'Plot curves
+#'
+#'@description plots AUROC and AUPRC curves for evaluation of performance
+#'@param evaluation the list containing the auroc and auprc data (output of evaluate_model function)
+#'@return nothing to return, but plots curves 
+plot_curves <- function(evaluation) {
+
+  roc_data <- evaluation$auroc_data
+  auroc_val <- round(evaluation$auroc$.estimate, 3)
+  pr_data <- evaluation$auprc_data
+  auprc_val <- round(evaluation$auprc$.estimate, 3)
+  
+  roc_plot <- ggplot(roc_data) +
+    geom_line(aes(x = 1 - specificity,
+                  y = sensitivity),
+              size = 1.2,
+              color = "blue") +
+    geom_abline(linetype = "dashed") +
+    labs(x = "False Positive Rate",
+         y = "True Positive Rate",
+         title = paste0("ROC Curve (AUROC = ", auroc_val, ")")) +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  pr_plot <- ggplot(pr_data) +
+    geom_line(aes(x = recall,
+                  y = precision),
+              size = 1.2,
+              color = "red") +
+    labs(x = "Recall",
+         y = "Precision",
+         title = paste0("Precision–Recall Curve (AUPRC = ", auprc_val, ")")) +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  roc_plot + pr_plot + plot_layout(ncol = 2)
+}
+
+```
+
+```{r}
+###################### FULL END TO END PIPELINE #################################
+
+#Getting data
+RP2_data <- preprocess_data("/Users/romer/Documents/GitHub/PHP1560_Final_Project_Histone_Modifications/data.txt",
+                            c("clamp", "gaf", "psq", "seq", "gene_labels"),
+                            "mre_labels")
+
+#Further subsetting the data to a single chromosome. In our case, we want to create a model trained on just the X chromosome. We relevel so that in the label column (mre_labels), level one is "0" and level two is "1"
+df_chromosome <- filter_chromosome_data(RP2_data, 
+                                        chromosome = "chrX", 
+                                        label_col = "mre_labels")
+df_chromosome$mre_labels <- relevel(df_chromosome$mre_labels, ref = "0")
+
+#Splitting data into train and test sets
+splits <- split_data(df_chromosome, label_col = "mre_labels", prop = 0.80)
+train_data <- splits$train
+test_data  <- splits$test
+
+#Training model
+model <- train_model(train_data)
+tidy(model)
+
+#Evaluating the model
+evaluation <- evaluate_model(model, test_data)
+plot_curves(evaluation)
+#evaluation$metrics
+#evaluation$confusion_matrix
+
+
+
+```
+
+```{r}
+#' Cross chromosome experiment
+#' 
+#' @description Performs cross chromosome experiment where the model is trained on one chromosome and tested on other chromosomes 
+#' @param train_chr a string containing the name of the chromosome you want the model to be trained on
+#' @param test_chrs a vector of strings containing the chromosomes you want the model to be tested on. 
+#' @param data a df containing the full data
+#' @param label a string containing the column name of the labels
+#' @param prop a numeric value between 0 and 1. The proportion of the data you want to set aside for training. Testing will be 1 - prop. 
+#' @return a df containing the metrics for accuracy, auroc, and auprc for each pair of train and test chromosome
+cross_chr_experiment <- function(train_chr, test_chrs, data, label, prop) {
+  
+  df_train_chr <- filter_chromosome_data(data,
+                                         chromosome = train_chr,
+                                         label_col = label)
+  df_train_chr[[label]] <- relevel(df_train_chr[[label]], ref = "0")
+  
+  results_df <- data.frame(train_chr = character(),
+                           test_chr = character(),
+                           Accuracy = numeric(),
+                           AUROC = numeric(),
+                           AUPRC = numeric())
+  
+  for (chr in test_chrs) {
+    df_test_chr <- filter_chromosome_data(data,
+                                          chromosome = chr,
+                                          label_col = label)
+    df_test_chr[[label]] <- relevel(df_test_chr[[label]], ref = "0")
+    
+    train_data <- split_data(df_train_chr, label_col=label, prop=prop)$train
+    test_data <- split_data(df_test_chr, label_col=label, prop=prop)$test
+    
+    model <- train_model(train_data)
+    tidy(model)
+    eval_cross <- evaluate_model(model, test_data)
+    metrics <- eval_cross$metrics
+    acc <- metrics[metrics$.metric == "accuracy", ".estimate"][[1]]
+    auroc <- (eval_cross$auroc)$.estimate
+    auprc <- (eval_cross$auprc)$.estimate
+    
+    #result <- list(train_chr, chr, acc, auroc, auprc)
+    result <- data.frame(train_chr = train_chr,
+                         test_chr = chr,
+                         Accuracy = acc,
+                         AUROC = auroc,
+                         AUPRC = auprc)
+    results_df <- rbind(results_df, result)
+  }
+  return(results_df)
+}
+
+#Example usage
+x_to_autosomal <- cross_chr_experiment("chrX", 
+                                       c("chr2L", "chr2R", "chr3L"), 
+                                       RP2_data, 
+                                       "mre_labels", 
+                                       0.8)
+autosomal_to_x <- cross_chr_experiment("chr2L", 
+                     c("chrX", "chr2R", "chr3L"),
+                     RP2_data, 
+                     "mre_labels", 
+                     0.8)
+
+```
+
+```{r}
+#' Plotting metrics for cross model
+#' 
+#' @description plots histograms for a given metric for the cross evaluated model
+#' 
+#' @param cross_model_metrics A df containing the metrics of the cross trained model. The output of cross_chr_experiment
+#' @param metric A string containing the name of the metric to plot
+#' @param title A string for the title of the plot
+#' 
+#' @return nothing to return, but plots histograms of the metric for each test chromosome
+plot_metric_cross_model <- function(cross_model_metrics, metric, title) {
+  metrics <- cross_model_metrics[[metric]]
+  ymin <- max(min(metrics) - 0.1, 0)
+  ymax <- min(max(metrics) + 0.1, 1)
+  
+  ggplot(cross_model_metrics) +
+    geom_col(aes(x = test_chr, y = .data[[metric]]),
+             color = "blue",
+             fill = "blue",
+             alpha = 1) +
+    labs(x = "Test chromosome",
+         y = metric,
+         title = title) +
+    coord_cartesian(ylim = c(ymin, ymax)) +
+    theme_minimal()
+}
+
+
+plot_metric_cross_model(x_to_autosomal, "AUROC", "AUROC for X to Autosomal model")
+plot_metric_cross_model(x_to_autosomal, "AUPRC", "AUPRC for X to Autosomal model")
+plot_metric_cross_model(x_to_autosomal, "Accuracy", "Accuracy for X to Autosomal model")
+
+```
