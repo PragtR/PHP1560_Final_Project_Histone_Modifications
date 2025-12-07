@@ -89,68 +89,88 @@ split_data <- function(df, label_col, prop) {
 #'Train model
 #'
 #'@description fits data to a logistic regression model for binary classification.
+#'@param train_df a df containing the training data
+#'@param label_col a string, the name of the column that contains the labels
+#'@param predictor_cols a vector of strings containing the names of the columns with predictors. eg. histone modifications
 #'@param downsample a boolean indicating if the user wants to downsample the majority class in the training data. Recommended for datasets that are large but imbalanced. In our case, we opt for downsampling as we had ~4k (~20%) positive labels
 #'@param class_weights a boolean indicating if the user wants to include class weights. Useful if the dataset is slightly imbalanced and you don't want to downsample, but still want the model to pay more attention to the minority class. Only checked if downsample is false
 #'@return the fitted logisitc regression model
-train_model <- function(train_df, downsample=TRUE, class_weights=FALSE) {
+train_model <- function(train_df, label_col, predictor_cols,
+                        downsample = TRUE, class_weights = FALSE) {
   
-  if(downsample) {
-    recipe_obj <- recipe(
-    mre_labels ~ h3k27ac + h3k27me3 + h3k36me3 +
-                 h3k4me1 + h3k4me2 + h3k4me3 +
-                 h3k9me3 + h4k16ac,
-    data = train_df) %>%
-    step_downsample(mre_labels) 
+  #getting subsets of training data that contain the labels only and the predictors only 
+  y <- train_df[[label_col]]
+  x <- train_df[, predictor_cols, drop = FALSE]
   
-  model <- logistic_reg() %>%
-    set_engine("glm") %>%
-    set_mode("classification")
+  if (downsample) {
+
+    #creating a flexible formula that allows for multiple predictors
+    formula_str <- paste(label_col, "~", paste(predictor_cols, collapse = " + "))
+    fm <- as.formula(formula_str)
+
+    #preprocessing, setting predictors and outcomes
+    recipe_obj <- recipe(fm, data = train_df) %>%
+      step_downsample(all_of(label_col)) #downsampling here
   
-  workflow_obj <- workflow() %>%
-    add_recipe(recipe_obj) %>%
-    add_model(model)
-  
-  fitted <- fit(workflow_obj, data = train_df)
+    #creating the model
+    model <- logistic_reg() %>%
+      set_engine("glm") %>%
+      set_mode("classification")
+
+    #setting pipeline, combining the preprocess steps and model into a single object
+    workflow_obj <- workflow() %>%
+      add_recipe(recipe_obj) %>%
+      add_model(model)
+    
+    #fitting the model
+    fitted <- fit(workflow_obj, data = train_df)
+    return(fitted)
   }
   else {
     if (class_weights) {
-      curr_prop <- table(train_df$mre_labels)
+      curr_prop <- table(y)
       total <- sum(curr_prop)
-      class_weights <- total/(2*curr_prop)
-      train_df$class_weights <- ifelse(train_df$mre_labels=="1",
-                                      class_weights["1"],
-                                      class_weights["0"])
-  
-      fitted_model <- logistic_reg() %>%
+      #common class weights formula is inversely proportional to classs size,
+      #so the smaller the class size the larger the weight
+      cw <- total / (2 * curr_prop)
+      train_df$class_weights <- ifelse(y == names(cw)[2], cw[2], cw[1])
+      
+      model <- logistic_reg() %>%
         set_engine("glm") %>%
-        set_mode("classification") %>%
-        fit(mre_labels ~ h3k27ac + h3k27me3 + h3k36me3 +
-              h3k4me1 + h3k4me2 + h3k4me3 +
-              h3k9me3 + h4k16ac,
-            data = train_df,
-            weights = train_df$class_weights)
+        set_mode("classification")
+      
+      fitted_model <- fit_xy(
+        object = model,
+        x = x,
+        y = y,
+        weights = train_df$class_weights
+      )
       return(fitted_model)
     }
     else {
-      fitted_model <- logistic_reg() %>%
-      set_engine("glm") %>%
-      set_mode("classification") %>%
-      fit(mre_labels ~ h3k27ac + h3k27me3 + h3k36me3 +
-            h3k4me1 + h3k4me2 + h3k4me3 +
-            h3k9me3 + h4k16ac,
-          data = train_df)
+      model <- logistic_reg() %>%
+        set_engine("glm") %>%
+        set_mode("classification")
+      
+      fitted_model <- fit_xy(
+        object = model,
+        x = x,
+        y = y
+      )
       return(fitted_model)
     }
   }
 }
+
 
 #'Evaluate model
 #'
 #'@description evaluates the trained model on the testing set
 #'@param model the fitted regression model
 #'@param test_df the df containing the testing data
+#'@param label_col the name of column containing the labels
 #'@return a list containing metrics and data necessary for AUROC and AUPRC plots
-evaluate_model <- function(model, test_df) {
+evaluate_model <- function(model, test_df, label_col) {
   
   # Generate predictions
   preds <- predict(model, test_df, type = "class")
@@ -158,7 +178,7 @@ evaluate_model <- function(model, test_df) {
   
   # Build tibble for yardstick
   results <- tibble(
-    truth = test_df$mre_labels,
+    truth = test_df[[label_col]],
     estimate = preds$.pred_class,
     prob_1 = preds_prob$.pred_1
   )
@@ -250,7 +270,7 @@ plot_curves <- function(evaluation) {
 ###################### FULL END TO END PIPELINE #################################
 
 #Getting data
-RP2_data <- preprocess_data("/Users/romer/Documents/GitHub/PHP1560_Final_Project_Histone_Modifications/data.txt",
+RP2_data <- preprocess_data("/Users/romer/Desktop/data.txt",
                             c("clamp", "gaf", "psq", "seq", "gene_labels"),
                             "mre_labels")
 
@@ -266,11 +286,15 @@ train_data <- splits$train
 test_data  <- splits$test
 
 #Training model
-model <- train_model(train_data)
+model <- train_model(train_data, 
+                     label_col = "mre_labels",
+                     predictor_cols = c("h3k27ac","h3k27me3","h3k36me3",
+                                        "h3k4me1","h3k4me2","h3k4me3",
+                                        "h3k9me3","h4k16ac"))
 tidy(model)
 
 #Evaluating the model
-evaluation <- evaluate_model(model, test_data)
+evaluation <- evaluate_model(model, test_data, label_col="mre_labels")
 plot_curves(evaluation)
 #evaluation$metrics
 #evaluation$confusion_matrix
@@ -289,37 +313,42 @@ plot_curves(evaluation)
 #' @param label a string containing the column name of the labels
 #' @param prop a numeric value between 0 and 1. The proportion of the data you want to set aside for training. Testing will be 1 - prop. 
 #' @return a df containing the metrics for accuracy, auroc, and auprc for each pair of train and test chromosome
-cross_chr_experiment <- function(train_chr, test_chrs, data, label, prop) {
+cross_chr_experiment <- function(train_chr, test_chrs, data, 
+                                 label, prop, label_col, predictor_cols) {
   
+  #getting filtered data for the train chromosome
   df_train_chr <- filter_chromosome_data(data,
                                          chromosome = train_chr,
                                          label_col = label)
   df_train_chr[[label]] <- relevel(df_train_chr[[label]], ref = "0")
   
+  #initializing empty df to return
   results_df <- data.frame(train_chr = character(),
                            test_chr = character(),
                            Accuracy = numeric(),
                            AUROC = numeric(),
                            AUPRC = numeric())
   
+  #looping through each test chromosome in test_chrs
   for (chr in test_chrs) {
     df_test_chr <- filter_chromosome_data(data,
                                           chromosome = chr,
                                           label_col = label)
     df_test_chr[[label]] <- relevel(df_test_chr[[label]], ref = "0")
     
+    #training data on train chrom but testing data from test chrom
     train_data <- split_data(df_train_chr, label_col=label, prop=prop)$train
     test_data <- split_data(df_test_chr, label_col=label, prop=prop)$test
     
-    model <- train_model(train_data)
+    model <- train_model(train_data, label_col=label_col, predictor_cols=predictor_cols)
     tidy(model)
-    eval_cross <- evaluate_model(model, test_data)
+    eval_cross <- evaluate_model(model, test_data, label_col=label_col)
     metrics <- eval_cross$metrics
     acc <- metrics[metrics$.metric == "accuracy", ".estimate"][[1]]
     auroc <- (eval_cross$auroc)$.estimate
     auprc <- (eval_cross$auprc)$.estimate
     
-    #result <- list(train_chr, chr, acc, auroc, auprc)
+    #appending metrics to df
     result <- data.frame(train_chr = train_chr,
                          test_chr = chr,
                          Accuracy = acc,
@@ -335,12 +364,20 @@ x_to_autosomal <- cross_chr_experiment("chrX",
                                        c("chr2L", "chr2R", "chr3L"), 
                                        RP2_data, 
                                        "mre_labels", 
-                                       0.8)
+                                       0.8,
+                                       label_col="mre_labels",
+                                       predictor_cols=c("h3k27ac","h3k27me3","h3k36me3",
+                                        "h3k4me1","h3k4me2","h3k4me3",
+                                        "h3k9me3","h4k16ac"))
 autosomal_to_x <- cross_chr_experiment("chr2L", 
                      c("chrX", "chr2R", "chr3L"),
                      RP2_data, 
                      "mre_labels", 
-                     0.8)
+                     0.8,
+                     label_col="mre_labels",
+                     predictor_cols=c("h3k27ac","h3k27me3","h3k36me3",
+                                        "h3k4me1","h3k4me2","h3k4me3",
+                                        "h3k9me3","h4k16ac"))
 
 ```
 
