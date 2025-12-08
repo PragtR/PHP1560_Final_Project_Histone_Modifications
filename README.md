@@ -24,4 +24,5 @@ This project builds a Binary Logistic Regression model pipeline to test whether 
 4. View plots in the "results" folder that will be created in your project folder
 
 **Reference:**
+- Duan, J., & Larschan, E. N. (2019). Dosage compensation: How to be compensated… or not? Current Biology, 29(23), R1229–R1231. https://doi.org/10.1016/j.cub.2019.09.065
 - https://medium.com/the-researchers-guide/modelling-binary-logistic-regression-using-tidymodels-library-in-r-part-1-c1bdce0ac055
