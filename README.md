@@ -1,12 +1,12 @@
 # Binary Logistic Regression Model Pipeline for MRE Prediction Task for Dosage Compensation in Drosophila 
 
 **Background:**
-Male Drosophilia have only one X chromosome, while females have two. To compensate, males use the MSL (Male-Specific Lethal) complex to dramatically increase transcription on the single X chromosome and these MSL complex binds to specific DNA motifs called MREs (MSL Recognition Elements), which is what we will try to predict through our model.
+Male Drosophilia have only one X chromosome, while females have two. To compensate, males use the MSL (Male-Specific Lethal) complex to dramatically increase transcription on the single X chromosome. These MSL complex binds to specific DNA motifs called MREs (MSL Recognition Elements). Because the specificity of the MSL complex is flexible, the MRE motif is not a set motif and has some variability in the exact nucleotide sequence it is composed of. Epigenomic features that control the chromatin environment may play a role in determining where these MRE exists. Thus, we propose a logisitc regression model that is trained on ChIP-seq (epigenomic) data to predict the presence of these MREs in binned regions across chromosomes.
 
-In our case, we used data from the Larschan lab (with permission) from Brown University to run our pipeline and results from our data can be found on the results folder.
+While we apply our logisitc regression model to this MRE prediction task, our pipeline is flexible to any binary classification prediction task using ChIP-seq data. Users can specify the column name that contains the labels for prediction, as well as column names that hold values for the predictors, and the pipeline will automatically build a logisitc regression model using their specified data.
 
 **Project Details:**
-This project builds a Binary Logistic Regression model pipeline to test whether histone modification patterns can predict:
+This project builds a Multiple Logistic Regression model pipeline to test whether histone modification patterns can predict:
 1. which genomic bins contain MREs
 2. whether a model trained on the X chromosome can generalize to autosomes
 
