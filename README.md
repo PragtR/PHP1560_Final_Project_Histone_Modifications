@@ -3,6 +3,8 @@
 Background:
 Male Drosophilia have only one X chromosome, while females have two. To compensate, males use the MSL (Male-Specific Lethal) complex to dramatically increase transcription on the single X chromosome and these MSL complex binds to specific DNA motifs called MREs (MSL Recognition Elements), which is what we will try to predict through our model.
 
+In our case, we used data from the Larschan lab (with permission) from Brown University to run our pipeline and results from our data can be found on the results folder
+
 Project Details:
 This project builds a Binary Logistic Regression model pipeline to test whether histone modification patterns can predict:
 1. which genomic bins contain MREs

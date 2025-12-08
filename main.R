@@ -21,7 +21,7 @@ if (!dir.exists("results")) dir.create("results")
 
 
 #Getting data
-data <- preprocess_data("/Users/prottoyroy/Desktop/php1560/histone_data.txt",
+data <- preprocess_data("histone.txt",
   c("clamp", "gaf", "psq", "seq", "gene_labels"),
   "mre_labels"
 )
