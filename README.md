@@ -10,6 +10,24 @@ This project builds a Multiple Logistic Regression model pipeline to test whethe
 1. Which genomic bins contain MREs
 2. Whether a model trained on the X chromosome can generalize to autosomes
 
+**Structure of R Scripts and their associated functions:**
+1. preprocess.R 
+- preprocess_data () - loads the dataset and cleans it
+- filter_chromosome_data ()  - keeps only the rows of the selected chromosome
+
+2. split_data.R
+
+3. train_model.R 
+
+4. evaluate_model.R
+
+5. plotting.R
+- plot_curves () - ROC and Precision-Recall curves
+- plot_metric_cross_model () - barplots for a given metric for the cross-evaluated model
+
+6. cross_chromosome.R
+
+
 **Running the pipeline:**
 1. Make sure the data file is in your project folder / specify the path on "main.R"
 2. Make sure all the scripts are in the same folder.
