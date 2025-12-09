@@ -40,7 +40,10 @@ This project builds a Multiple Logistic Regression model pipeline to test whethe
 - generate ROC and PR curves + barplots for cross-chromosome tests metrics and saves  (using plotting.R script)
 
 4. View plots in the "results" folder that will be created in your project folder
+   
+**Slides on the model and its results using our histone-modification dataset:**
+https://docs.google.com/presentation/d/1T_rDU_xxclIRnIROBcIyGrRMuTnxs4tdKekl96gMNNc/edit?usp=sharing
 
-**Reference:**
+**References:**
 - Duan, J., & Larschan, E. N. (2019). Dosage compensation: How to be compensated… or not? Current Biology, 29(23), R1229–R1231. https://doi.org/10.1016/j.cub.2019.09.065
 - https://medium.com/the-researchers-guide/modelling-binary-logistic-regression-using-tidymodels-library-in-r-part-1-c1bdce0ac055
